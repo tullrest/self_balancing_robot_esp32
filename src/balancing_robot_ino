@@ -1,0 +1,157 @@
+/*
+ * ============================================================
+ *  Project: Self-Balancing Robot (ESP32)
+ *  Author: Junhyung Park
+ *
+ *  Description:
+ *  Two-wheeled self-balancing robot using ESP32, MPU6050 IMU,
+ *  and TMC2209 stepper drivers.
+ *
+ *  Control Strategy:
+ *   - Complementary filter (MPU6050 library)
+ *   - PD controller for stabilization
+ *   - Hardware timer interrupt for deterministic step generation
+ *   - 1/16 microstepping via MS1/MS2 hardware configuration
+ *   - Deadband to suppress micro oscillation noise
+ *
+ *  Hardware:
+ *   - ESP32 Dev Module
+ *   - MPU6050 (I2C)
+ *   - 2x TMC2209
+ *   - NEMA17 stepper motors
+ *   - 2S LiPo (7.4V)
+ *
+ * ============================================================
+ */
+
+===================== CODE START =====================
+
+#include <Wire.h>
+#include <MPU6050_tockn.h>
+
+MPU6050 mpu(Wire);
+
+// ================= PIN CONFIG =================
+#define STEP1 18
+#define DIR1  19
+#define STEP2 14
+#define DIR2  23
+
+bool DIR1_INVERT = true;
+bool DIR2_INVERT = true;
+
+// ================= CONTROL PARAMETERS =================
+float Kp = 7.5;
+float Kd = 3.5;
+
+float RATE_SCALE = 36.0;      // adjusted for 1/16 microstepping
+float ANGLE_DEADBAND = 0.5;
+float U_DEADBAND = 4.0;
+
+float angleOffset = 4.0;
+
+// ================= TIMER =================
+hw_timer_t *timer = nullptr;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+
+volatile uint32_t halfPeriodUs = 0;
+volatile bool stepLevel = false;
+volatile bool steppingEnabled = false;
+
+// ------------------------------------------------------
+// Hardware timer interrupt for deterministic step pulses
+// ------------------------------------------------------
+void IRAM_ATTR onTimer() {
+  portENTER_CRITICAL_ISR(&timerMux);
+
+  if (!steppingEnabled || halfPeriodUs == 0) {
+    digitalWrite(STEP1, LOW);
+    digitalWrite(STEP2, LOW);
+    stepLevel = false;
+    portEXIT_CRITICAL_ISR(&timerMux);
+    return;
+  }
+
+  stepLevel = !stepLevel;
+  digitalWrite(STEP1, stepLevel);
+  digitalWrite(STEP2, stepLevel);
+
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+// Convert step rate to timer period
+void setStepRate(int rateStepsPerSec) {
+  if (rateStepsPerSec <= 0) {
+    portENTER_CRITICAL(&timerMux);
+    steppingEnabled = false;
+    halfPeriodUs = 0;
+    portEXIT_CRITICAL(&timerMux);
+    return;
+  }
+
+  uint32_t hp = (uint32_t)(1000000.0 / (2.0 * rateStepsPerSec));
+  if (hp < 5) hp = 5;
+
+  portENTER_CRITICAL(&timerMux);
+  steppingEnabled = true;
+  halfPeriodUs = hp;
+  portEXIT_CRITICAL(&timerMux);
+
+  timerAlarm(timer, halfPeriodUs, true, 0);
+}
+
+void setDir(bool forward) {
+  bool d1 = forward ^ DIR1_INVERT;
+  bool d2 = forward ^ DIR2_INVERT;
+  digitalWrite(DIR1, d1);
+  digitalWrite(DIR2, d2);
+}
+
+// ================= SETUP =================
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  pinMode(STEP1, OUTPUT);
+  pinMode(DIR1, OUTPUT);
+  pinMode(STEP2, OUTPUT);
+  pinMode(DIR2, OUTPUT);
+
+  digitalWrite(STEP1, LOW);
+  digitalWrite(STEP2, LOW);
+
+  mpu.begin();
+  mpu.calcGyroOffsets(true);
+
+  timer = timerBegin(1000000);
+  timerAttachInterrupt(timer, &onTimer);
+  timerAlarm(timer, 200, true, 0);
+  timerStart(timer);
+
+  setStepRate(0);
+}
+
+// ================= MAIN LOOP =================
+void loop() {
+
+  mpu.update();
+
+  float angle = mpu.getAngleY() + angleOffset;
+  float gyro  = mpu.getGyroY();
+
+  if (fabs(angle) < ANGLE_DEADBAND) angle = 0;
+
+  // PD controller for stabilization
+  // u = Kp * angle + Kd * angular_velocity
+  float u = Kp * angle + Kd * gyro;
+
+  if (fabs(u) < U_DEADBAND) u = 0;
+
+  bool forward = (u > 0);
+
+  int rate = (int)(fabs(u) * RATE_SCALE);
+  if (rate > 3000) rate = 3000;
+
+  setDir(forward);
+  setStepRate(rate);
+}
