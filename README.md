@@ -1,156 +1,113 @@
-# Self-Balancing Robot (ESP32)
+# Self-Balancing Robot with Custom PCB (ESP32)
 
-A two-wheeled self-balancing robot built using an ESP32, MPU6050 IMU, and TMC2209 stepper drivers.
+## Overview
 
-This project implements real-time PD control with hardware timer–based step generation to stabilize an inverted pendulum system.
+This project is a two wheeled self balancing robot built using an ESP32 and a custom designed PCB.
 
----
-
-## Project Overview
-
-The objective of this project was to design and implement a real-time self-balancing robot that maintains an upright position (0° pitch) using feedback control.
-
-Unlike delay-based stepping, this system uses a hardware timer interrupt on the ESP32 to generate deterministic step pulses, improving control stability and reducing jitter.
-
-The robot integrates:
-
-- Real-time sensor fusion
-- Closed-loop PD control
-- Motor driver current tuning
-- Microstepping optimization
-- Custom CAD chassis design
+The goal was to design a compact and reliable embedded system by integrating control, sensing, power, and mechanical structure into a single platform.
 
 ---
 
-## Control Strategy
+## Key Features
 
-The robot is modeled as an inverted pendulum.
-
-State variables:
-- θ (pitch angle)
-- ω (angular velocity)
-
-A PD controller is used:
-
-u = Kp·θ + Kd·ω
-
-Where:
-- Kp corrects positional error
-- Kd provides damping to reduce oscillation
-
-Angle estimation is handled using the MPU6050 library’s complementary filtering of accelerometer and gyroscope data.
-
-Detailed explanation:
-See `docs/control_strategy.md`
+* Custom PCB designed in KiCad
+* ESP32 based control system
+* MPU6050 IMU for angle sensing
+* Dual motor driver system (TMC2209)
+* NEMA17 stepper motors
+* PID based balancing algorithm
+* Custom mechanical body designed in CAD (Fusion 360)
 
 ---
 
 ## System Architecture
 
-**Microcontroller**
-- ESP32 Dev Module
-
-**IMU**
-- MPU6050 (I2C)
-
-**Motor Drivers**
-- 2× TMC2209 (configured for 1/16 microstepping)
-
-**Motors**
-- NEMA 17 Stepper Motors
-
-**Power**
-- 2S LiPo Battery (7.4V)
-
-Wiring details:
-See `hardware/wiring.md`
+MPU6050 → ESP32 → PID Control → Motor Driver → Motors
 
 ---
 
-## Engineering Challenges & Solutions
+## Hardware Components
 
-### 1. Oscillation Instability
-Initial aggressive proportional gain caused high-frequency oscillation.
-
-Solution:
-- Reduced Kp
-- Increased Kd
-- Added control deadband
-
----
-
-### 2. Excessive Motor Noise
-Motors produced mechanical vibration during micro-corrections.
-
-Root causes:
-- Default 1/8 microstepping
-- High driver current (Vref)
-
-Solutions:
-- Upgraded to 1/16 microstepping via MS1/MS2 hardware configuration
-- Tuned Vref to ~0.97–0.98V
-- Adjusted RATE_SCALE for smoother response
+* ESP32 microcontroller
+* MPU6050 (IMU sensor)
+* 2× TMC2209 motor drivers
+* NEMA17 stepper motors
+* 11.1V LiPo battery
+* Custom designed PCB
 
 ---
 
-### 3. Faulty Driver Debugging
-One TMC2209 module showed unstable Vref behavior (~0.04V fluctuation).
+## PCB Design
 
-Resolution:
-- Replaced defective driver
-- Recalibrated both drivers for matched current
+### PCB Layout
 
----
+![PCB Layout](docs/images/pcb_layout.png)
 
-## Mechanical Design
+### Schematic
 
-The chassis was custom-designed in CAD with the following considerations:
+![Schematic](docs/images/schematic.png)
 
-- Low center of gravity
-- Symmetric motor alignment
-- Stable battery placement
-- Rigid frame to reduce vibration
+### 3D View
 
-CAD files and renders:
-➡️ See `/cad` directory
+![3D PCB](docs/images/pcb_3d.png)
 
----
+### PCB Description
 
-## Final Stable Configuration
+The custom PCB integrates:
 
-- Kp = 7.5
-- Kd = 3.5
-- Microstepping = 1/16
-- Vref ≈ 0.97–0.98V
-- Stable near 0° with reduced acoustic noise
+* ESP32 control unit
+* IMU interface (I2C communication)
+* Motor driver connections
+* Power distribution and regulation
+
+This significantly reduces wiring complexity compared to breadboard setups and improves reliability.
 
 ---
 
-## Key Technical Highlights
+## Mechanical Design (CAD)
 
-- Hardware timer–based deterministic step generation
-- Real-time closed-loop PD control
-- Driver current calibration (Vref tuning)
-- Microstepping-based vibration reduction
-- Structured debugging and iterative optimization
+### CAD Model
 
----
+![CAD Model](docs/images/cad_render.png)
 
-## Demo
+The robot body was designed in Fusion 360 with focus on:
 
-
+* Structural stability
+* Compact PCB integration
+* Proper center of mass positioning for balance
 
 ---
 
-## Lessons Learned
+## Control System
 
-- Deterministic timing is critical in real-time control systems.
-- Hardware misconfiguration can mimic control instability.
-- Iterative tuning is essential for physical dynamic systems.
-- Mechanical design significantly affects control performance.
+The robot uses a PID based control algorithm to maintain vertical balance.
+
+**Parameters:**
+
+* Kp: 38.0
+* Kd: 2.2
+* Kv: 0.010
+
+The IMU provides tilt angle data, and the controller adjusts motor speed accordingly to stabilize the robot.
 
 ---
 
-## License
+## Real Hardware
 
-This project is for educational and portfolio purposes.
+![Robot](docs/images/robot.jpg)
+
+---
+
+## Future Improvements
+
+* Add encoder feedback for more precise control
+* Improve PCB layout (noise reduction, grounding)
+* Optimize PID tuning
+* Add wireless control (Bluetooth/WiFi)
+* Reduce system weight
+
+---
+
+## Goal
+
+To develop a compact, efficient, and fully integrated self balancing robot system combining electronics, control algorithms, and mechanical design.
