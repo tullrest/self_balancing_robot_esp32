@@ -1,0 +1,266 @@
+#include <Wire.h>
+#include <MPU6050_tockn.h>
+
+MPU6050 mpu(Wire);
+
+// ================= PIN =================
+#define STEP1 18
+#define DIR1  19
+#define STEP2 14
+#define DIR2  23
+
+bool DIR1_INVERT = true;
+bool DIR2_INVERT = true;
+
+// ================= CONTROL =================
+float Kp = 18.0;
+float Kd = 1.5;
+float Kv = 0.060;          // 속도 브레이크 (드리프트 줄임)
+
+// ---- TRIM (핵심) ----
+float ANGLE_TRIM = 0.35f;   // deg. +면 "앞으로 더 숙인 것처럼" 취급(방향 반대면 부호 바꿔)
+
+// 자동 트림 세팅
+bool  AUTO_TRIM = false;
+float TRIM_RATE = 0.0025f; // deg per (steps/s*sec) 스케일. 0.001~0.006에서 튜닝
+float TRIM_MAX  = 6.0f;    // deg. 자동 트림 최대치
+
+// deadband
+float ANGLE_DEADBAND = 0.20;
+
+// u 맵핑
+float U_START = 4.0;
+float U_DIR   = 2.5;
+float U_MAX   = 55.0;
+
+float FALL_ANGLE = 45.0;
+
+// speed
+int MIN_RATE  = 350;
+int RATE_MAX  = 1200;
+int RATE_SLEW = 700;
+
+// kick
+int KICK_RATE = 1200;
+int KICK_MS   = 60;
+
+// ================= TIMER (ESP32 core 3.3.7) =================
+hw_timer_t *timer = nullptr;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+
+volatile uint32_t halfPeriodUs = 0;
+volatile bool stepLevel = false;
+volatile bool steppingEnabled = false;
+
+// ================= INTERNAL =================
+float angle0 = 0.0;
+int rateNow = 0;
+int dirNowSign = +1;
+uint32_t kickUntilMs = 0;
+bool forwardHold = true;
+
+static uint32_t lastUs = 0;
+
+void IRAM_ATTR onTimer() {
+  portENTER_CRITICAL_ISR(&timerMux);
+
+  if (!steppingEnabled || halfPeriodUs == 0) {
+    digitalWrite(STEP1, LOW);
+    digitalWrite(STEP2, LOW);
+    stepLevel = false;
+    portEXIT_CRITICAL_ISR(&timerMux);
+    return;
+  }
+
+  stepLevel = !stepLevel;
+  digitalWrite(STEP1, stepLevel);
+  digitalWrite(STEP2, stepLevel);
+
+  portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+void setDirBoth(bool forward) {
+  bool d1 = forward ^ DIR1_INVERT;
+  bool d2 = forward ^ DIR2_INVERT;
+  digitalWrite(DIR1, d1);
+  digitalWrite(DIR2, d2);
+}
+
+int clampi(int v, int lo, int hi) {
+  if (v < lo) return lo;
+  if (v > hi) return hi;
+  return v;
+}
+
+int approachInt(int cur, int target, int step) {
+  int diff = target - cur;
+  diff = clampi(diff, -step, step);
+  return cur + diff;
+}
+
+void setStepRate(int rateStepsPerSec) {
+  if (rateStepsPerSec <= 0) {
+    portENTER_CRITICAL(&timerMux);
+    steppingEnabled = false;
+    halfPeriodUs = 0;
+    portEXIT_CRITICAL(&timerMux);
+    return;
+  }
+
+  uint32_t hp = (uint32_t)(1000000.0 / (2.0 * rateStepsPerSec));
+  if (hp < 25) hp = 25;
+  if (hp > 50000) hp = 50000;
+
+  portENTER_CRITICAL(&timerMux);
+  steppingEnabled = true;
+  halfPeriodUs = hp;
+  portEXIT_CRITICAL(&timerMux);
+
+  timerAlarm(timer, halfPeriodUs, true, 0);
+}
+
+void motorTest() {
+  setDirBoth(true);  setStepRate(900); delay(700);
+  setStepRate(0); delay(300);
+  setDirBoth(false); setStepRate(900); delay(700);
+  setStepRate(0); delay(300);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  Wire.begin();
+  Wire.setClock(400000);
+
+  pinMode(STEP1, OUTPUT);
+  pinMode(DIR1, OUTPUT);
+  pinMode(STEP2, OUTPUT);
+  pinMode(DIR2, OUTPUT);
+  digitalWrite(STEP1, LOW);
+  digitalWrite(STEP2, LOW);
+
+  timer = timerBegin(1000000);
+  timerAttachInterrupt(timer, &onTimer);
+  timerAlarm(timer, 200, true, 0);
+  timerStart(timer);
+
+  mpu.begin();
+
+  // ★ 캘리브: 로봇을 "완전 수직/정지"로 고정하고 실행해야 정확
+  mpu.calcGyroOffsets(true);
+
+  float sum = 0.0;
+  for (int i = 0; i < 300; i++) {
+    mpu.update();
+    sum += mpu.getAngleY();
+    delay(4);
+  }
+  angle0 = sum / 300.0;
+
+  lastUs = 0;
+  motorTest();
+
+  Serial.println("TRIM: use '[' and ']' to adjust ANGLE_TRIM (0.1deg). 't' toggles auto-trim.");
+}
+
+void loop() {
+  // ====== serial manual trim ======
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '[') ANGLE_TRIM -= 0.10f;
+    if (c == ']') ANGLE_TRIM += 0.10f;
+    if (c == 't') AUTO_TRIM = !AUTO_TRIM;
+    if (ANGLE_TRIM >  TRIM_MAX) ANGLE_TRIM =  TRIM_MAX;
+    if (ANGLE_TRIM < -TRIM_MAX) ANGLE_TRIM = -TRIM_MAX;
+  }
+
+  mpu.update();
+
+  // raw angle
+  float angleRaw = (mpu.getAngleY() - angle0);
+
+  // ★ TRIM 적용 (핵심)
+  float angle = angleRaw - ANGLE_TRIM;
+
+  // gyro strong filter
+  float gyroRaw = mpu.getGyroY();
+  static float gyro = 0.0f;
+  gyro = 0.90f * gyro + 0.10f * gyroRaw;
+
+  if (fabs(angle) > FALL_ANGLE) {
+    rateNow = 0;
+    setStepRate(0);
+    lastUs = 0;
+    return;
+  }
+
+  if (fabs(angle) < ANGLE_DEADBAND) angle = 0;
+
+  float vel_cmd = (float)(dirNowSign * rateNow);
+
+  // dt
+  uint32_t nowUs = micros();
+  float dt = (lastUs == 0) ? 0.01f : (nowUs - lastUs) * 1e-6f;
+  lastUs = nowUs;
+  dt = constrain(dt, 0.001f, 0.03f);
+
+  // ====== AUTO TRIM (한쪽으로 계속 굴러가는 바이어스 제거) ======
+  // 조건: 거의 서있고(각도 작음), 너무 빠르게 달리는 중이 아닐 때만 트림을 천천히 업데이트
+  if (AUTO_TRIM && fabs(angleRaw) < 6.0f && rateNow > 0 && rateNow < 1100) {
+    // vel_cmd가 +면 앞으로 가는 중 -> 앞으로 가는 바이어스를 줄이도록 TRIM을 그 방향으로 미세 조정
+    ANGLE_TRIM += TRIM_RATE * vel_cmd * dt;
+
+    if (ANGLE_TRIM >  TRIM_MAX) ANGLE_TRIM =  TRIM_MAX;
+    if (ANGLE_TRIM < -TRIM_MAX) ANGLE_TRIM = -TRIM_MAX;
+  }
+
+  // control
+  float u = Kp * angle + Kd * gyro - Kv * vel_cmd;
+
+  // u -> rateTarget
+  float uAbs = fabs(u);
+  if (uAbs > U_MAX) uAbs = U_MAX;
+
+  int rateTarget = 0;
+  if (uAbs <= U_START) {
+    rateTarget = 0;
+  } else {
+    float t = (uAbs - U_START) / (U_MAX - U_START);
+    t = constrain(t, 0.0f, 1.0f);
+    rateTarget = (int)(MIN_RATE + t * (RATE_MAX - MIN_RATE));
+  }
+
+  // kick
+  if (rateNow == 0 && rateTarget > 0) kickUntilMs = millis() + KICK_MS;
+  if (rateTarget > 0 && millis() < kickUntilMs) {
+    if (rateTarget < KICK_RATE) rateTarget = KICK_RATE;
+  }
+
+  // ramp
+  rateNow = approachInt(rateNow, rateTarget, RATE_SLEW);
+
+  if (rateNow == 0) {
+    setStepRate(0);
+    return;
+  }
+
+  if (fabs(u) > U_DIR) forwardHold = (u > 0);
+  bool forward = forwardHold;
+
+  setDirBoth(forward);
+  dirNowSign = forward ? +1 : -1;
+  setStepRate(rateNow);
+
+  // debug
+  static uint32_t tPrint = 0;
+  if (millis() - tPrint > 120) {
+    tPrint = millis();
+    Serial.print("angRaw="); Serial.print(angleRaw, 2);
+    Serial.print(" trim=");  Serial.print(ANGLE_TRIM, 2);
+    Serial.print(" ang=");   Serial.print(angle, 2);
+    Serial.print(" gyro=");  Serial.print(gyro, 1);
+    Serial.print(" u=");     Serial.print(u, 1);
+    Serial.print(" rateT="); Serial.print(rateTarget);
+    Serial.print(" rate=");  Serial.println(rateNow);
+  }
+}
