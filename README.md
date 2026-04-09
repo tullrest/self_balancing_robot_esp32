@@ -1,4 +1,4 @@
-# Self-Balancing Robot with Custom PCB (ESP32)
+# Self Balancing Robot with Custom PCB (ESP32)
 
 ## Overview
 
