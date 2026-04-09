@@ -1,0 +1,63 @@
+## PCB Design Explanation
+
+The custom PCB integrates power management, control logic, sensor interface, and motor driver connections into a single board.
+
+### Power System
+
+The system is powered by a 11.1v liPo battery (VBAT), which passes through:
+
+* A fuse (3A) for overcurrent protection
+* A power switch for system control
+* A buck converter to regulate voltage to 3.3V
+
+Decoupling capacitors (0.1µF and 220µF) are placed near power lines to stabilize voltage and reduce noise.
+
+---
+
+### Microcontroller (ESP32)
+
+The ESP32 serves as the central controller:
+
+* Receives sensor data from the MPU6050 via I2C
+* Executes the PID control algorithm
+* Sends control signals to motor drivers
+
+GPIO pins are routed to motor drivers and sensor modules through pin headers.
+
+---
+
+### IMU Sensor (MPU6050)
+
+The MPU6050 is connected using I2C communication:
+
+* SDA and SCL lines are pulled up using 10kΩ resistors
+* Provides tilt angle data for balancing control
+
+This sensor is critical for real time feedback.
+
+---
+
+### Motor Driver Interface (TMC2209)
+
+Two motor drivers are connected for left and right motors:
+
+* STEP and DIR signals are routed from the ESP32
+* Power (VSW) is supplied separately for motor operation
+* Decoupling capacitors are used near drivers for stability
+
+Motor outputs are connected via terminal connectors for easy wiring.
+
+---
+
+### Layout Considerations
+
+* Power and signal paths are separated to reduce noise interference
+* Wide traces are used for high current motor paths
+* Ground plane is used to improve signal stability
+* Components are arranged to minimize wiring complexity
+
+---
+
+### Design Goal
+
+The PCB was designed to replace a breadboard setup with a compact, reliable, and modular system suitable for real world robotics applications.
